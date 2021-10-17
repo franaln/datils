@@ -46,7 +46,7 @@ style_dict = {
     'legend.frameon': False,
     # 'legend.handleheight': 2.5,
     # 'legend.handlelength': 2.5,
-    'legend.loc': 'upper right',
+    # 'legend.loc': 'upper right',
     # 'legend.labelspacing': 0.8,
     # 'legend.borderpad': 0.5,
     # 'legend.columnspacing': 2.0,
@@ -92,24 +92,43 @@ style_dict = {
 
 plt.rcParams.update(style_dict)
 
-# Colors
-# base 00: #1B2B34
-# base 01: #343D46
-# base 02: #4F5B66
-# base 03: #65737E
-# base 04: #A7ADBA
-# base 05: #C0C5CE
-# base 06: #CDD3DE
-# base 07: #D8DEE9
-# base 08: #EC5f67
-# base 09: #F99157
-# base 0A: #FAC863
-# base 0B: #99C794
-# base 0C: #5FB3B3
-# base 0D: #6699CC
-# base 0E: #C594C5
-# base 0F: #AB7967
 
+# Move title axes to right (x) and top (y)
+_ORIG_SET_XLABEL = mpl.axes.Axes.set_xlabel
+def set_xlabel(axes, label, *args, **kwargs):
+    kwargs_ = dict(loc='right')
+    kwargs_.update(kwargs)
+    _ORIG_SET_XLABEL(axes, label, *args, **kwargs_)
+
+_ORIG_SET_YLABEL = mpl.axes.Axes.set_ylabel
+def set_ylabel(axes, label, *args, **kwargs):
+    kwargs_ = dict(loc='top')
+    kwargs_.update(kwargs)
+    _ORIG_SET_YLABEL(axes, label, *args, **kwargs_)
+
+mpl.axes.Axes.set_xlabel = set_xlabel
+mpl.axes.Axes.set_ylabel = set_ylabel
+
+
+# Colors
+colours_dict = {
+    # base 00: #1B2B34
+    # base 01: #343D46
+    # base 02: #4F5B66
+    # base 03: #65737E
+    # base 04: #A7ADBA
+    # base 05: #C0C5CE
+    # base 06: #CDD3DE
+    # base 07: #D8DEE9
+    # base 08: #EC5f67
+    # base 09: #F99157
+    # base 0A: #FAC863
+    # base 0B: #99C794
+    # base 0C: #5FB3B3
+    # base 0D: #6699CC
+    # base 0E: #C594C5
+    # base 0F: #AB7967
+}
 
 
 def _header(palette,
@@ -217,33 +236,6 @@ def _titles(title,
                   color="#342b3b");
 
 
-def _thousand_sep(p, ax, data, x, y):
-
-    '''Handles thousand separatos for tick labels.
-
-    p | fig object | matplotlib figure object
-    ax | axis object | a single axis object
-    data | df | pandas dataframe with data
-    x | str | column name for x
-    y | str | column name for y
-
-    NOTE: If x is list (e.g. hist or line) then x should be x[0].
-          For example _thousand_sep(p, ax, data, x[0], y)
-
-    '''
-
-    from matplotlib import ticker
-
-    # only apply if data is int
-    if x != None:
-        if isinstance(data[x].iloc[0], int):
-            ax.get_xaxis().set_major_formatter(ticker.FuncFormatter(lambda x, p: format(int(x), ',')));
-
-    # only apply if data is int
-    if y != None:
-        if isinstance(data[y].iloc[0], int):
-            ax.get_yaxis().set_major_formatter(ticker.FuncFormatter(lambda x, p: format(int(x), ',')));
-
 
 def _legend(x, legend, legend_labels, legend_position):
 
@@ -322,38 +314,11 @@ def cmaps(cmap):
     return cmap
 
 
-def _label_to_hex(label, n_colors):
-    hex = sns.color_palette(label, n_colors)
-    return hex.as_hex()
-
-
-def params():
-    return {
-        'fig_height': 6.6,
-        'fig_width': 10
-    }
-
+# def _label_to_hex(label, n_colors):
+#     hex = sns.color_palette(label, n_colors)
+#     return hex.as_hex()
 
 def _sizer(data):
     sizes = data.apply(sqrt)
     sizes = rescaler(sizes, 10)
     return sizes
-
-
-
-
-_ORIG_SET_XLABEL = mpl.axes.Axes.set_xlabel
-def set_xlabel(axes, label, *args, **kwargs):
-    kwargs_ = dict(loc='right')
-    #kwargs_ = dict(x=1.0, ha="right")
-    kwargs_.update(kwargs)
-    _ORIG_SET_XLABEL(axes, label, *args, **kwargs_)
-
-_ORIG_SET_YLABEL = mpl.axes.Axes.set_ylabel
-def set_ylabel(axes, label, *args, **kwargs):
-    kwargs_ = dict(loc='top')##y=1.0, ha="right")
-    kwargs_.update(kwargs)
-    _ORIG_SET_YLABEL(axes, label, *args, **kwargs_)
-
-mpl.axes.Axes.set_xlabel = set_xlabel
-mpl.axes.Axes.set_ylabel = set_ylabel
