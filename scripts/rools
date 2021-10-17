@@ -1,0 +1,400 @@
+#! /usr/bin/env python
+# -*- python -*-
+
+from __future__ import print_function
+import os
+import sys
+import argparse
+from prettytable import PrettyTable
+
+import pandas as pd
+import numpy as np
+
+import signal
+signal.signal(signal.SIGPIPE, signal.SIG_DFL)
+
+try:
+    import ROOT
+except ImportError:
+    print('Error importing ROOT. Exiting...')
+    sys.exit(1)
+
+ROOT.PyConfig.IgnoreCommandLineOptions = True
+ROOT.gROOT.SetBatch(True)
+
+
+def str_to_num(s):
+    # it may be already int or float
+    if isinstance(s, (int, float)):
+        return s
+    # all int like strings can be converted to float so int tries first
+    try:
+        return int(s)
+    except (TypeError, ValueError):
+        pass
+    try:
+        return float(s)
+    except (TypeError, ValueError):
+        return s
+
+def split_cmd(cmd):
+
+    if '(' in cmd and ')' in cmd:
+        i1 = cmd.index('(')
+        i2 = cmd.index(')')
+        cmd, cmd_arg = cmd[:i1], cmd[i1+1:i2]
+
+        if ',' in cmd_arg:
+            cmd_arg = [ str_to_num(a) for a in cmd_arg.split(',') ]
+        else:
+            cmd_arg = str_to_num(cmd_arg)
+
+    else:
+        cmd, cmd_arg = cmd, ''
+
+    return cmd, cmd_arg
+
+#------------
+# Histograms
+#------------
+def print_hist_all(hist):
+
+    t = PrettyTable()
+
+    if hist.InheritsFrom('TH2'):
+
+        # labels
+        labels_x = []
+        labels_y = []
+        for bx in range(1, hist.GetNbinsX()+1):
+            label = hist.GetXaxis().GetBinLabel(bx)
+            if not label:
+                label = '[%.2f, %.2f]' % (hist.GetXaxis().GetBinLowEdge(bx), hist.GetXaxis().GetBinUpEdge(bx))
+
+            labels_x.append(label)
+
+        for by in range(1, hist.GetNbinsY()+1):
+            label = hist.GetYaxis().GetBinLabel(by)
+            if not label:
+                label = '[%.2f, %.2f]' % (hist.GetYaxis().GetBinLowEdge(by), hist.GetYaxis().GetBinUpEdge(by))
+
+            labels_y.append(label)
+
+        # values
+        values = []
+        for by in range(1, hist.GetNbinsY()+1):
+            values_x = []
+            for bx in range(1, hist.GetNbinsX()+1):
+                values_x.append((hist.GetBinContent(bx, by), hist.GetBinError(bx, by)))
+
+            values.append(values_x)
+
+        max_len = max([len(label) for label in labels_y]) + 1
+        #print('%s%s' % (' '*max_len, ' '.join([label for label in labels_x])))
+        for label, values_x in zip(labels_y, values):
+            # print('%s%s: %s' % (label, ' '*(max_len-len(label)), '    '.join([ '%.2f +- %.2f' % (val, err) for (val, err) in values_x])))
+            # print('%s%s: %s' % (label, ' '*(max_len-len(label)), '    '.join([ '%.2f' % (val) for (val, err) in values_x])))
+            row = ['%s' % label, ] + \
+                [ '%.2f' % (val) for (val, err) in values_x]
+            t.add_row(row)
+
+
+    else:
+        labels = []
+        values = []
+        for b in range(hist.GetNbinsX()):
+            label = hist.GetXaxis().GetBinLabel(b+1)
+            if not label:
+                label = '[%.2f, %.2f]' % (hist.GetXaxis().GetBinLowEdge(b+1), hist.GetXaxis().GetBinUpEdge(b+1))
+
+            labels.append(label)
+            values.append((hist.GetBinContent(b+1), hist.GetBinError(b+1)))
+
+        max_len = max([len(label) for label in labels]) + 1
+        for label, (val, err) in zip(labels, values):
+            if val < 0.01:
+                print('%s%s: %.4f +- %.4f' % (label, ' '*(max_len-len(label)), val, err))
+            else:
+                print('%s%s: %.2f +- %.2f' % (label, ' '*(max_len-len(label)), val, err))
+
+
+    t.align = 'r'
+    print(t)
+
+
+def print_hist(hist, args):
+
+    # FIX: update for TH2 support
+
+    # Checked cmds: GetBinContent, GetBinError
+    if args.cmd is not None:
+
+        cmd, cmd_arg = split_cmd(args.cmd)
+
+        if isinstance(cmd_arg, list):
+            print(getattr(hist, cmd)(*cmd_arg))
+        else:
+            if cmd_arg:
+                print(getattr(hist, cmd)(cmd_arg))
+            else:
+                fn = getattr(hist, cmd)
+
+            print(fn())
+
+    else:
+        print_hist_all(hist)
+
+#-------
+# Trees
+#-------
+def scan_tree(tree, fields, selection, sort=None, format_=False):
+
+    # data, columns = tree.AsMatrix(return_labels=True)
+
+    # df = pandas.DataFrame(data=data, columns=columns)
+
+    # df.head()
+
+    # get query
+    res = tree.Query(fields, selection)
+
+    nrows = res.GetRowCount()
+    nfields = res.GetFieldCount()
+
+    fields = [res.GetFieldName(j) for j in range(nfields)]
+    rows = []
+    for i in range(nrows):
+        row = res.Next()
+        rows.append([str_to_num(row.GetField(j)) for j in range(nfields)])
+
+
+    # # build table
+    # # table = PrettyTable(fields)
+    # for row in rows:
+    #     if format_:
+    #         print([ format_ % f for f in row])
+    #     else:
+    #         print(row)
+
+    # table.sortby = sort
+    # table.align = 'r'
+
+    # print(table)
+
+
+def print_tree(tree, args):
+
+    if args.cmd is not None:
+        print(getattr(tree, cmd))
+
+    elif args.count:
+
+        hist = ROOT.TH1F('tmp', 'tmp', 1, 0.5, 1.5)
+        tree.Project('tmp', '1', args.selection)
+
+        error = ROOT.Double(0.0)
+        integral = hist.IntegralAndError(1, hist.GetNbinsX(), error)
+
+        print('%.2f +- %.2f' % (integral, error))
+
+    elif args.scan:
+        scan_tree(tree, args.scan, '') #, args.selection, ''args.sort, args.format)
+
+    else:
+        for b in tree.GetListOfLeaves():
+            print(b.GetName())
+
+
+def print_root_file_content(keys, args):
+    for key in keys:
+        if args.type:
+            print('%s [%s]' % (key.GetName(), key.GetClassName()))
+        else:
+            print(key.GetName())
+
+
+
+def main():
+
+    parser = argparse.ArgumentParser(description='')
+
+    ## paths
+    parser.add_argument('filepath', nargs='?')
+    parser.add_argument('rootpath', nargs='?')
+
+    ## general options
+    parser.add_argument('-t', '--type', action='store_true', help='Show object type')
+    parser.add_argument('--format', help='')
+
+    parser.add_argument('--cmd', help='Object method. For example GetEntries or GetBinContent(1)')
+
+    ## tree options
+    parser.add_argument('-s', '--selection', default='', help='Apply selection to tree')
+
+    parser.add_argument('--scan', help='Scan tree. Similar to TTree::Scan')
+    parser.add_argument('--sort', help='Sort scan output by this column')
+    parser.add_argument('-c', '--count', action='store_true')
+
+
+    ## edit options (onyl available if --edit)
+    parser.add_argument('--edit', action='store_true', help='Caution! you are modifying the file')
+    parser.add_argument('--delete', action='store_true', help='Caution! Delete all objects with this name. ')
+
+    if len(sys.argv) < 2:
+        parser.print_usage()
+        return
+
+    args = parser.parse_args()
+
+
+    file_path, root_path = args.filepath, args.rootpath
+
+    # dir with root files
+    if os.path.isdir(file_path):
+
+        dir_content = [ os.path.join(file_path, fn) for fn in os.listdir(file_path) if 'root' in fn ]
+
+        if len(dir_content) == 0:
+            print('directory is empty')
+            return 1
+
+
+        if root_path is None:
+
+            f0 = ROOT.TFile.Open(dir_content[0])
+            keys = f0.GetListOfKeys()
+
+            for key in keys:
+                if args.type:
+                    print('%s [%s]' % (key.GetName(), key.GetClassName()))
+                else:
+                    print(key.GetName())
+
+        # assume all files in dir have the same tree with this name
+        if root_path is not None:
+
+            f0 = ROOT.TFile.Open(dir_content[0])
+            obj = f0.Get(root_path)
+
+            # tree
+            if obj.InheritsFrom('TTree'):
+
+                chain = ROOT.TChain(root_path)
+
+                for fn in dir_content:
+                    chain.Add(fn)
+
+                print_tree(chain, args)
+
+            # histogram
+            elif obj.InheritsFrom('TH1'):
+
+                hist = obj.Clone()
+
+                for fn in dir_content[1:]:
+
+                    f = ROOT.TFile.Open(fn)
+
+                    h = f.Get(root_path)
+
+                    hist.Add(h, 1.0)
+
+                print_hist(hist, args)
+
+
+        return
+
+
+    # One file
+    if not os.path.isfile(file_path):
+        print('%s is not a file' % file_path)
+        return 1
+
+    # pandas DataFrame (for now only h5)
+    if file_path.endswith('.h5'):
+        df = pd.read_hdf(file_path, root_path)
+        df.info()
+        return 0
+
+
+    try:
+        fin = ROOT.TFile.Open(file_path)
+
+        if fin.IsZombie():
+            print('Error opening rootfile')
+            fin.Close()
+            return 1
+    except ReferenceError:
+        return 1
+
+
+    keys = fin.GetListOfKeys()
+
+    # Show file content
+    if root_path is None:
+        print_root_file_content(keys, args)
+    else:
+
+        if '/' in root_path:
+            spath = root_path.split('/')
+
+            if spath[0] in [ key.GetName() for key in keys ]:
+                fin.cd(spath[0])
+                root_path = spath[1]
+
+                # recompute keys
+                keys = ROOT.gDirectory.GetListOfKeys()
+
+
+        if args.edit:
+            fin.ReOpen('update')
+
+            if args.delete:
+                fin.Delete(root_path+';*')
+
+            elif args.cmd is not None:
+
+                obj = ROOT.gDirectory.Get(root_path)
+
+                if not obj.InheritsFrom('TH1'):
+                    fin.Close()
+                    return 1
+
+                cmd, cmd_arg = split_cmd(args.cmd)
+
+                getattr(obj, cmd)(*cmd_arg)
+
+                obj.Write()
+
+        elif root_path in [ key.GetName() for key in keys ]:
+
+            obj = ROOT.gDirectory.Get(root_path)
+
+            # dir
+            if obj.InheritsFrom('TDirectory'):
+                for key in obj.GetListOfKeys():
+                    print(key.GetName())
+
+            # histogram
+            elif obj.InheritsFrom('TH1'):
+                print_hist(obj, args)
+
+            # tree
+            elif obj.InheritsFrom('TTree'):
+                print_tree(obj, args)
+
+            # others
+            else:
+                obj.Print()
+
+
+        else:
+            print('object %s does not exist' % root_path)
+
+
+    fin.Close()
+    return 0
+
+
+if __name__ == '__main__':
+    main()
