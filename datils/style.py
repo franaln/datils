@@ -6,6 +6,8 @@ import numpy as np
 import matplotlib as mpl
 import matplotlib.pyplot as plt
 
+from functools import partial
+
 style_dict = {
     # FONT
     'font.size': 14,
@@ -31,9 +33,10 @@ style_dict = {
     'axes.labelpad': 5,
 
     # FIGURE
-    'figure.dpi': 200,
+    'figure.dpi': 250,
     'figure.frameon': False,
     'figure.figsize': [8, 6],
+    'figure.facecolor': 'white',
 
     # LINES
     'lines.linestyle': '-',
@@ -93,7 +96,7 @@ style_dict = {
 plt.rcParams.update(style_dict)
 
 
-# Move title axes to right (x) and top (y)
+# Move title axes to right (x) and top (y) --> not working with jupyter if datils is reloaded!
 _ORIG_SET_XLABEL = mpl.axes.Axes.set_xlabel
 def set_xlabel(axes, label, *args, **kwargs):
     kwargs_ = dict(loc='right')
@@ -108,6 +111,9 @@ def set_ylabel(axes, label, *args, **kwargs):
 
 mpl.axes.Axes.set_xlabel = set_xlabel
 mpl.axes.Axes.set_ylabel = set_ylabel
+
+# mpl.axes.Axes.set_xlabel = partial(mpl.axes.Axes.set_xlabel, loc='right')
+# mpl.axes.Axes.set_ylabel = partial(mpl.axes.Axes.set_ylabel, loc='top')
 
 
 # Colors
