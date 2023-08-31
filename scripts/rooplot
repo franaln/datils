@@ -1,0 +1,456 @@
+#! /usr/bin/env python
+
+import os
+import os.path
+import re
+import json
+import argparse
+# from glob import glob
+
+import ROOT
+ROOT.gROOT.SetBatch(True)
+
+import numpy as np
+
+import matplotlib.pyplot as plt
+import matplotlib.colors as colors
+
+# from EGMCE.default import default_binning
+# from EGMCE.style import style_dict
+# plt.rcParams.update(style_dict)
+
+from datils.utils import read_config, save_fig
+from datils.root_utils import plot_root_hist
+from datils import style
+
+
+# Utils
+def save_plot(fig, name, output_dir, ext='png'):
+
+    if output_dir is None:
+        path = f'{name}.{ext}'
+    else:
+        path = os.path.join(output_dir, f'{name}.{ext}')
+
+    fig.savefig(path, bbox_inches='tight')
+    plt.close(fig)
+
+
+# Object specification parser
+def split_proj_idx(s):
+    if '{' not in s or '}' not in s:
+        return s, None
+    try:
+        idx0, idx1 = s.find('{}'), s.find('}')
+        return s[:idx0], int(s[idx0+1:idx1])
+    except:
+        return s, None
+
+def parse_object_spec(obj_str):
+
+    regex = re.compile(
+        (
+            r"^(?P<file_path>.*?)(?://(?P<root_path>.*?))?(?:\[(?P<filter>.*?)\])?"
+            r"(?://(?P<varx>.*?))?(?:\((?P<binningx>.*?)\))?"
+            r"(?::(?P<vary>.*?))?(?:\((?P<binningy>.*?)\))?"
+            r"(?:,(?P<weight>.*))?$"
+        )
+    )
+
+    match = regex.match(obj_str)
+    if match:
+        match_dict = match.groupdict()
+        #print("Matched:", groups)
+    else:
+        raise Exception("No match found.")
+
+    keys = ('file_path', 'root_path', 'filter', 'varx', 'vary', 'binningx', 'binningy', 'weight')
+
+    spec = { k: match_dict.get(k, None) for k in keys }
+
+    # Convert binning str to array of floats
+    if spec['binningx'] is not None:
+        binning = spec['binningx'].split(',')
+
+        if len(binning) == 3:
+            spec['binningx'] = [ int(binning[0]), float(binning[1]), float(binning[2]) ]
+        else:
+            spec['binningx'] = [ float(x) for x in binning  ]
+
+    if spec['binningy'] is not None:
+        binning = spec['binningy'].split(',')
+
+        if len(binning) == 3:
+            spec['binningy'] = [ int(binning[0]), float(binning[1]), float(binning[2]) ]
+        else:
+            spec['binningy'] = [ float(x) for x in binning  ]
+
+    return spec
+
+
+# Get/Prepare objects
+def get_obj_from_dict(obj_dict):
+
+    if obj_dict['type'] == 'hist1d':
+        return get_hist1d_from_ntuple(obj_dict)
+    elif obj_dict['type'] == 'hist2d':
+        return get_hist2d_from_ntuple(obj_dict)
+    if obj_dict['type'] == 'fhist1d':
+        return get_hist1d_from_file(obj_dict)
+
+
+def get_hist1d_from_file(spec):
+
+    f = ROOT.TFile.Open(spec['file_path'])
+
+    root_path = spec['root_path']
+
+    # Projection from 2D histogram
+    if '$' in root_path:
+
+        hist_path, proj_str = root_path.split('$')
+
+        h2 = f.Get(hist_path)
+        h2.SetDirectory(0)
+
+        proj_ax, proj_bin = split_str_and_idx(proj_str)
+
+        if proj_ax == 'px':
+            h = h2.ProjectionX(h2.GetName()+f'_{proj_ax}', proj_bin, proj_bin, 'e')
+        elif proj_ax == 'py':
+            h = h2.ProjectionY(h2.GetName()+f'_{proj_ax}', proj_bin, proj_bin, 'e')
+        else:
+            raise Exception('Not implemented')
+
+        h.SetDirectory(0)
+
+    else:
+        h = f.Get(root_path)
+        h.SetDirectory(0)
+
+    f.Close()
+    return h
+
+
+def get_hist2d_from_ntuple(spec):
+
+    df = ROOT.RDataFrame(spec['root_path'], spec['file_path'])
+
+    if 'filter' in spec:
+        df = df.Filter(spec['filter'])
+
+    binningx = spec['binningx']
+    binningy = spec['binningy']
+
+    hname = 'lpm'
+    if len(binningx) == 3 and len(binningy) == 3:
+        hm = ROOT.RDF.TH2DModel(hname, '', binningx[0], binningx[1], binningx[2], binningy[0], binningy[1], binningy[2])
+    elif len(binningx) == 3 and len(binningy) > 3:
+        hm = ROOT.RDF.TH2DModel(hname, '', binningx[0], binningx[1], binningx[2], len(binningy)-1, np.array(binningy))
+    elif len(binningx) > 3 and len(binningy) == 3:
+        hm = ROOT.RDF.TH2DModel(hname, '', len(binningx)-1, np.array(binningx), binningy[0], binningy[1], binningy[2])
+    else:
+        hm = ROOT.RDF.TH2DModel(hname, '', len(binningx)-1, np.array(binningx), len(binningy)-1, np.array(binningy))
+
+    if 'weight' in spec:
+        if '*' in spec['weight']:
+            df = df.Define('def_weight', spec['weight'])
+            spec['weight'] = 'def_weight'
+
+        hist = df.Histo2D(hm, spec['varx'], spec['vary'], spec['weight'])
+    else:
+        hist = df.Histo2D(hm, spec['varx'], spec['vary'])
+
+    hist = hist.GetValue()
+    ROOT.SetOwnership(hist, False)
+
+    return hist
+
+
+def get_hist1d_from_ntuple(spec):
+
+    df = ROOT.RDataFrame(spec['root_path'], spec['file_path'])
+
+    if 'selection' in spec:
+        df = df.Filter(spec['selection'])
+
+    # fix name
+    binningx = spec['binningx']
+
+    if len(binningx) > 3:
+        hm = ROOT.RDF.TH1DModel('asd', '', len(binningx)-1, np.array(binningx))
+    else:
+        hm = ROOT.RDF.TH1DModel('asd', '', binningx[0], binningx[1], binningx[2])
+
+    if 'weight' in spec:
+        if '*' in spec['weight']:
+            df = df.Define('def_weight', spec['weight'])
+            spec['weight'] = 'def_weight'
+        hist = df.Histo1D(hm, spec['varx'], spec['weight'])
+    else:
+        hist = df.Histo1D(hm, spec['varx'])
+
+    hist = hist.GetValue()
+    ROOT.SetOwnership(hist, False)
+    return hist
+
+
+# ------
+# Plots
+# ------
+
+def plot_hist2d(hist, conf, output_dir, debug):
+
+    nbins_x = hist.GetNbinsX()
+    nbins_y = hist.GetNbinsY()
+
+    bins_x = np.array([ hist.GetXaxis().GetBinLowEdge(bx+1) for bx in range(nbins_x) ] + \
+                    [ hist.GetXaxis().GetBinUpEdge(nbins_x)])
+    bins_y = np.array([ hist.GetYaxis().GetBinLowEdge(by+1) for by in range(nbins_y) ] + \
+                    [ hist.GetYaxis().GetBinUpEdge(nbins_y)])
+
+    bins_x_centers = np.array([ hist.GetXaxis().GetBinCenter(bx+1) for bx in range(nbins_x) ])
+    bins_y_centers = np.array([ hist.GetYaxis().GetBinCenter(by+1) for by in range(nbins_y) ])
+
+    data = np.empty((nbins_y, nbins_x))
+
+    for bx in range(nbins_x):
+        for by in range(nbins_y):
+            data[by,bx] = hist.GetBinContent(bx+1, by+1)
+
+    if 'zlim' in conf:
+        z_min, z_max = conf['zlim']
+    else:
+        z_min, z_max = np.min(data), np.max(data)
+
+    fig, ax = plt.subplots(figsize=(6, 6))
+
+    plot_opt = conf.get('option', 'normal')
+
+    # if plot_opt == 'normal':
+    if 'zscale' in conf and conf['zscale'] == 'log':
+        if z_min == 0:
+            z_min = 0.001
+
+        im = ax.pcolormesh(bins_x, bins_y, data, cmap=conf.get('cmap', 'coolwarm'),
+                            norm=colors.LogNorm(vmin=z_min, vmax=z_max))
+    else:
+        im = ax.pcolormesh(bins_x, bins_y, data, vmin=z_min, vmax=z_max, cmap=conf.get('cmap', 'coolwarm'))
+
+    # elif plot_opt == 'regular-grid':
+
+    #     x_array = np.array([ i * 6 / nbins_x  for i in range(nbins_x+1) ])
+    #     y_array = np.array([ i * 6 / nbins_y  for i in range(nbins_y+1) ])
+
+    #     im = ax.pcolormesh(x_array, y_array, data, vmin=z_min, vmax=z_max, cmap=conf.get('cmap', 'coolwarm'))
+
+
+    ax.set_xscale(conf.get('xscale', 'linear'))
+    ax.set_yscale(conf.get('yscale', 'linear'))
+
+    # Tick labels
+    if 'xticklabels' in conf and len(conf['xticklabels']) == len(bins_x):
+        labels = conf['xticklabels']
+        ax.set_xticks([ i for i in x_array ])
+        ax.set_xticklabels(labels, size='large')
+    elif plot_opt == 'regular-grid':
+        ax.set_xticks([ i for i in x_array ])
+        ax.set_xticklabels([ f'{bins_x[i]:.1f}' if i%2==0 else '' for i in range(len(x_array))], size='large')
+
+    if 'yticklabels' in conf and len(conf['yticklabels']) == len(bins_y):
+        labels = conf['yticklabels']
+        ax.set_yticks([ i for i in y_array ])
+        ax.set_yticklabels(labels, size='large')
+    elif plot_opt == 'regular-grid':
+        ax.set_yticks([ i for i in y_array ])
+        ax.set_yticklabels([ f'{bins_y[i]:.1f}' if i%2==0 else '' for i in range(len(y_array))], size='large')
+
+    # Text annotations
+    if conf.get('annot', False):
+        if plot_opt == 'normal':
+            x_array_m = bins_x_centers
+            y_array_m = bins_y_centers
+        elif plot_opt == 'regular-grid':
+            x_array_m = 0.5*(x_array[1:] + x_array[:-1])
+            y_array_m = 0.5*(y_array[1:] + y_array[:-1])
+
+    #     for i, x in enumerate(x_array_m):
+    #         for j, y in enumerate(y_array_m):
+    #             text = ax.text(x, y, f'{data[j,i]:.2f}', ha="center", va="center", color="black", size=5)
+
+    # Colorbar scale
+    if conf.get('colorbar', False):
+        cax = fig.add_axes([ax.get_position().x1+0.02,ax.get_position().y0, 0.03, ax.get_position().height])
+        cb = fig.colorbar(im, cax=cax)
+        if 'zlabel' in conf:
+            cb.set_label(conf['zlabel'], loc='top')
+
+    # Title and axes labels
+    if 'title' in conf:
+        ax.set_title(conf['title'], loc='left')
+
+    ax.set_xlabel(conf.get('xlabel', ''), loc='right')
+    ax.set_ylabel(conf.get('ylabel', ''), loc='top')
+
+    save_plot(fig, conf['name'], output_dir)
+
+
+
+
+
+
+
+
+
+def main():
+
+    parser = argparse.ArgumentParser()
+
+    parser.add_argument('-c', '--config', dest='config_file', required=True, help='Configuration file (json/python)')
+    # parser.add_argument('-i', '--input', dest='input_path', help='Input sample')
+    parser.add_argument('-o', '--output', dest='output_dir', default=None, help='Output directory to save the plots')
+    parser.add_argument('--debug', action='store_true', help='Print debug messages')
+
+    # parser.add_argument('-i', '--input', nargs='+', dest='input_path', help='Input sample')
+    # parser.add_argument('-o', '--output', dest='output_path', help='Output file')
+    # parser.add_argument('-c', '--config', dest='config_file', required=True, help='Configuration file (json/python)')
+    # parser.add_argument('-t', '--threads', default=1, type=int, help='Number of cores to use')
+    # parser.add_argument('-m', '--max_events', default=0, type=int, help='')
+    # parser.add_argument('-w', '--use_weights', action='store_true', help='')
+    # parser.add_argument('--debug', action='store_true', help='Print debug messages')
+
+
+    args = parser.parse_args()
+
+
+    # Read config file
+    config_dict = read_config(args.config_file, 'plot')
+
+    # Check config file
+    for conf in config_dict:
+
+        if 'name' not in conf:
+            raise Exception('Error in configuration file: missing name')
+
+
+        # # Try to guess kind of plot from input keys
+        # if 'kind' not in conf:
+
+        #     if 'eff2d' in conf:
+        #         if 'effs' in conf:
+        #             raise Exception('Error in configuration file: effs and eff2 are present')
+
+        #         conf['kind'] = 'eff_2d'
+
+        #     elif 'effs' in conf:
+        #         conf['kind'] = 'eff_1d'
+
+        # Set some default values that not need to be defined:
+        default_values = {
+            ##'type': 'hist1d',
+            'xlabel': '',
+            'ylabel': 'Events', # improve depending type
+            'ratio': {},
+            'legend': {},
+            'title': None,
+            'text': None,
+        }
+
+        for k, v in default_values.items():
+            if k not in conf:
+                conf[k] = v
+
+        # FIX: add default for effs, ratio and legend
+
+
+    if args.output_dir and not os.path.exists(args.output_dir):
+        os.system(f'mkdir {args.output_dir}')
+
+
+
+    # Plots
+    for conf in config_dict:
+
+        print(f'Plotting {conf["name"]}')
+        if args.debug:
+            print(f'{conf=}')
+
+
+        # Loop over objects
+        plot_type = 'hist1d'
+
+        objects = []
+        for spec in conf['objs']:
+
+            if 'exp' in spec:
+                spec.update(parse_object_spec(spec['exp']))
+                #spec['type'] = 'hist1d'
+            #else:
+            #    obj_def = { k: obj_dict.get(k, '') for k in ('type', 'path', 'tree', 'exp', 'weight', 'binning', 'selection') }
+
+            #obj_type = obj['type']
+            #path, tree, v = parse_input_str(obj['x'])
+
+            if spec['type'] == 'hist2d':
+                plot_type = 'hist2d'
+
+            objects.append(get_obj_from_dict(spec))
+
+        # if conf['kind'] == 'eff_2d':
+        #     plot_eff_2d(conf, args.output_dir, args.debug)
+
+        # elif conf['kind'] == 'eff_1d':
+        #     plot_eff_1d(conf, args.output_dir, args.debug)
+
+
+
+        if plot_type == 'hist2d':
+            plot_hist2d(objects[0], conf, args.output_dir, args.debug)
+
+        else:
+            fig, ax = plt.subplots()
+
+            for obj_dict, obj in zip(conf['objs'], objects):
+                # pop
+                plot_root_hist(obj, kind='lines', ax=ax, label=obj_dict['label'], err=False)
+
+
+            # Axes
+            if 'xlim' in conf:
+                ax.set_xlim(*conf['xlim'])
+            if 'ylim' in conf:
+                ax.set_ylim(*conf['ylim'])
+            else:
+                #if conf['type'] == 'eff':
+                #    ax.set_ylim(0, 1)
+                #else:
+                pass
+
+            if 'xscale' in conf:
+                ax.set_xscale(conf['xscale'])
+            if 'yscale' in conf:
+                ax.set_yscale(conf['yscale'])
+
+
+            ax.set_ylabel(conf['ylabel'], loc='top')
+            ax.set_xlabel(conf['xlabel'], loc='right')
+
+            # Legend
+            if conf['legend']:
+                # supported values are 'best', 'upper right', 'upper left', 'lower left', 'lower right', 'right', 'center left', 'center right', 'lower center', 'upper center', 'center'
+                ax.legend(
+                    loc=conf['legend'].get('loc', 'lower right'),
+                    ncol=conf['legend'].get('ncol', 1)
+                )
+            else:
+                ax.legend(loc='lower right')
+
+            if conf['title'] is not None:
+                ax.set_title(conf['title'], loc='left')
+
+            save_plot(fig, conf['name'], args.output_dir)
+
+
+
+if __name__ == '__main__':
+    main()
