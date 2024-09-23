@@ -252,7 +252,6 @@ def main():
 
     file_path, root_path = args.filepath, args.rootpath
 
-
     # pandas DataFrame (for now only h5)
     if file_path.endswith('.h5'):
         df = pd.read_hdf(file_path) ##, df_path)
@@ -268,7 +267,6 @@ def main():
         if len(dir_content) == 0:
             print('directory is empty')
             return 1
-
 
         if root_path is None:
 
@@ -311,7 +309,6 @@ def main():
                     hist.Add(h, 1.0)
 
                 print_hist(hist, args)
-
 
         return
 
